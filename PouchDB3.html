@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PouchDB</title>
+  <script src="https://cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.min.js"></script>
+  <style>
+    body {
+      font-family: system-ui, Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .container { max-width: 800px; width: 100%; }
+    input, select, button { padding: 6px; margin: 4px 0; width: 100% }
+    .movie { border-bottom: 1px solid #ddd; padding: 8px 0; display: flex; justify-content: space-between; }
+    .muted { color: #666; font-size: .9em }
+    .status { margin-top: 6px; font-size: .9em }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Movies - PouchDB</h1>
+
+    <form id="form">
+      <input type="hidden" id="id">
+      <input type="hidden" id="rev">
+      <label>Title <input id="title" required></label>
+      <label>Genre <input id="genre" required></label>
+      <label>MPAA Rating <input id="rating" placeholder="G / PG / PG-13 / R / NC-17"></label>
+      <label>Release Date <input id="release" placeholder="21/12/1937" required></label>
+      <label>Total Gross <input id="gross" type="number" min="0" step="1" placeholder="184925485"></label>
+      <label>Inflation Adjusted Gross <input id="inflAdj" type="number" min="0" step="1" placeholder="5228953251"></label>
+      <div style="display:flex;gap:8px;">
+        <button type="submit">Save</button>
+        <button type="button" id="reset">Reset</button>
+      </div>
+      <div id="status" class="status"></div>
+    </form>
+
+    <h2>Movie List</h2>
+    <div id="list"></div>
+  </div>
+
+<script>
+  //DATABASE SETUP 
+  const localDB  = new PouchDB('movies_simple');
+  const remoteDB = new PouchDB('http://admin:admin1@127.0.0.1:5984/movies');
+
+  // Live, retrying sync (offline-first)
+  const statusEl = document.getElementById('status');
+  PouchDB.sync(localDB, remoteDB, { live:true, retry:true })
+    .on('active', ()=>statusEl.textContent='Sync active...')
+    .on('paused', ()=>statusEl.textContent='Sync idle')
+    .on('error', e=>statusEl.textContent='Sync error: '+e.message);
+
+  //DOM refs
+  const form = document.getElementById('form');
+  const id   = document.getElementById('id');
+  const rev  = document.getElementById('rev');
+  const title= document.getElementById('title');
+  const genre= document.getElementById('genre');
+  const rating = document.getElementById('rating');
+  const release=document.getElementById('release');
+  const gross=document.getElementById('gross');
+  const inflAdj=document.getElementById('inflAdj');
+  const list = document.getElementById('list');
+
+  function resetForm() {
+    form.reset(); id.value=''; rev.value=''; statusEl.textContent='';
+  }
+  document.getElementById('reset').onclick = resetForm;
+
+  //helpers 
+  const numOrUndef = v => {
+    if (v === '' || v === null || v === undefined) return undefined;
+    const n = Number(v); return Number.isFinite(n) ? n : undefined;
+  };
+  const fmt = n => (typeof n === 'number' ? n.toLocaleString() : '');
+
+  //CRUD 
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const doc = {
+      _id: id.value || undefined,
+      _rev: rev.value || undefined,
+      movie_title: title.value.trim(),
+      genre: genre.value.trim(),
+      mpaa_rating: rating.value.trim() || undefined,
+      release_date: release.value.trim(),
+      total_gross: numOrUndef(gross.value),
+      inflation_adjusted_gross: numOrUndef(inflAdj.value)
+    };
+    try {
+      const res = id.value ? await localDB.put(doc) : await localDB.post(doc);
+      id.value = res.id; rev.value = res.rev;
+      statusEl.textContent = id.value ? 'Updated (local)' : 'Created (local)';
+      resetForm(); render();
+    } catch(err) {
+      statusEl.textContent = 'Save failed: '+err.message;
+    }
+  });
+
+  async function del(doc){
+    if (!confirm('Delete this movie?')) return;
+    await localDB.remove(doc);
+    render();
+  }
+
+  function edit(doc){
+    id.value = doc._id; rev.value = doc._rev;
+    title.value = doc.movie_title || '';
+    genre.value = doc.genre || '';
+    rating.value = doc.mpaa_rating || '';
+    release.value = doc.release_date || '';
+    gross.value = (typeof doc.total_gross === 'number') ? doc.total_gross : '';
+    inflAdj.value = (typeof doc.inflation_adjusted_gross === 'number') ? doc.inflation_adjusted_gross : '';
+  }
+
+  //LIST
+  async function render(){
+    const res = await localDB.allDocs({include_docs:true});
+    list.innerHTML = '';
+    if (!res.rows.length) { list.innerHTML = '<p class="muted">No movies yet.</p>'; return; }
+    res.rows.forEach(r=>{
+      const d = r.doc;
+      const div = document.createElement('div');
+      div.className = 'movie';
+      div.innerHTML = `
+        <div>
+          <strong>${d.movie_title || '(no title)'}</strong>
+          <div class="muted">
+            ${d.genre || ''}${d.mpaa_rating ? ' • ' + d.mpaa_rating : ''} — ${d.release_date || ''}
+          </div>
+          <div class="muted">
+            Gross: $${fmt(d.total_gross)} • Infl.Adj: $${fmt(d.inflation_adjusted_gross)}
+          </div>
+        </div>`;
+      const btns = document.createElement('div');
+      const e = document.createElement('button'); e.textContent='Edit'; e.onclick=()=>edit(d);
+      const x = document.createElement('button'); x.textContent='Delete'; x.onclick=()=>del(d);
+      btns.appendChild(e); btns.appendChild(x);
+      div.appendChild(btns);
+      list.appendChild(div);
+    });
+  }
+
+  localDB.changes({since:'now',live:true}).on('change', render);
+  render();
+</script>
+</body>
+</html>
